@@ -23,6 +23,10 @@ from app.model import common, ollama
 from app.search.search_manage import SearchManager
 from app.utils import parse_function_invocation
 
+# agent edits
+from cog_arch.utils import agent_globals
+# from cog_arch.utils.agent_globals import agent
+
 # FIXME: the system prompt should be different for stratified/state machine.
 SYSTEM_PROMPT = """You are a software developer maintaining a large project.
 You are working on an issue submitted to your project.
@@ -79,6 +83,25 @@ def start_conversation_round_stratified(
     This version uses json data to process API calls, instead of using the OpenAI function calling.
     Advantage is that multiple API calls can be made in a single round.
     """
+    # agent edits
+    if agent_globals.use_agent and agent_globals.agent.agent_mode=='plan':
+        # global agent
+        # agent = AcrAgent(agent_model=agent_model, ckpt_dir=agent_globals.ckpt_dir)
+        plans_message = agent_globals.agent.get_plans_msg(msg_thread.messages, use_retrieved=False)
+        print_acr(
+            agent_globals.agent.full_plan,
+            "full_plan",
+            print_callback=print_callback,
+        )
+        if plans_message:
+            # print(f'\n\nplans_message: {plans_message}')
+            msg_thread.add_user(plans_message)
+            print_acr(
+                plans_message,
+                "plans_message",
+                print_callback=print_callback,
+            )
+
     prompt = (
         "Based on the files, classes, methods, and code statements from the issue related to the bug, you can use the following search APIs to get more context of the project."
         "\n- search_class(class_name: str): Search for a class in the codebase"
@@ -228,6 +251,18 @@ def start_conversation_round_stratified(
                 "\n- do we need more context: construct search API calls to get more context of the project. (leave it empty if you don't need more context)"
                 "\n- where are bug locations: buggy files and methods. (leave it empty if you don't have enough information)"
             )
+            if agent_globals.use_agent and agent_globals.agent.agent_mode == 'kg':
+                agent_globals.agent.declarative_mem.print_doc_count()
+                msg_thread_list = msg_thread.to_msg()
+                extra_info = agent_globals.agent.graph_retrieval_procedure(msg_thread_list)
+                # msg += f"\n\nBefore you answer, please consider the following info from a knowledge graph of past attempts:\n\n{extra_info}"
+                extra_info_msg = f"\n\nHere are some info from past attempts:\n\n{extra_info}"
+                msg_thread.add_user(extra_info_msg)
+                print_acr(
+                    extra_info_msg,
+                    f"context retrieval round {round_no}",
+                    print_callback=print_callback,
+                )
             if isinstance(common.SELECTED_MODEL, ollama.OllamaModel):
                 # llama models tend to always output search APIs and buggy locations.
                 msg += "\n\nNOTE: If you have already identified the bug locations, do not make any search API calls."
@@ -248,6 +283,12 @@ def start_conversation_round_stratified(
     api_manager.dispatch_intent(
         write_patch_intent, msg_thread, print_callback=print_callback
     )
+
+    # agent edits
+    if agent_globals.use_agent and agent_globals.agent.agent_mode == 'plan':
+        if not agent_globals.agent.patch_is_correct and agent_globals.agent.edit_location_summary:
+            if agent_globals.agent.workflow_retry_count < agent_globals.agent.workflow_retry_limit:
+                agent_globals.agent.extract_learn_plan(msg_thread.messages)
 
     conversation_file = pjoin(output_dir, f"conversation_round_{round_no}.json")
     msg_thread.save_to_file(conversation_file)

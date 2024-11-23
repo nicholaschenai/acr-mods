@@ -37,6 +37,28 @@ def perfect_angelic_debug(
     )
 
 
+def perfect_angelic_debug_mod(
+    developer_diff_file: str, diff_file: str, project_path: str
+) -> tuple[
+    set[tuple[str, MethodId]], set[tuple[str, MethodId]], set[tuple[str, MethodId]]
+]:
+    """Do perfect angelic debugging and return a list of incorrect fix locations.
+
+    modified to use the output dir's dev patch since get_developer_patch_file uses
+    processed_data_lite which isnt in repo
+
+    Args:
+        developer_diff_file: path of dev diff file
+        diff_file: path of diff file
+
+    Returns:
+        A list of (filename, MethodId) that should not have been changed by diff_file
+    """
+    return compare_fix_locations(
+        diff_file, developer_diff_file, project_path
+    )
+
+
 def compare_fix_locations(
     diff_file: str, dev_diff_file: str, project_path: str
 ) -> tuple[

@@ -27,6 +27,19 @@ from app.post_process import (
 from app.raw_tasks import RawGithubTask, RawLocalTask, RawSweTask, RawTask
 from app.task import Task
 
+# agent edits
+import traceback
+import logging
+import cog_arch
+import sys
+from cog_arch.agents.acr_agent import AcrAgent
+from cog_arch.scripts.kg_construct import kg_construct_main
+from cog_arch.utils import agent_globals
+from cog_arch.utils.argparsers import add_agent_related_args
+from cog_arch.utils.register import register_lc_models
+
+from cognitive_base.utils import lm_cache_init
+
 
 def get_args(
     from_command_line_str: str = None, subparser_dest_attr_name: str = "command"
@@ -76,6 +89,14 @@ def main(args, subparser_dest_attr_name: str = "command"):
     # set whether brief or verbose log
     print_stdout: bool = not args.no_print
     log.print_stdout = print_stdout
+
+    # agent edits
+    if args.use_agent:
+        register_lc_models()
+        # LM caching
+        LM_CACHE_FOLDER = "lm_cache"
+        lm_cache_init(LM_CACHE_FOLDER)
+
     # model related
     common.set_model(args.model)
     # FIXME: make temperature part of the Model class
@@ -88,6 +109,36 @@ def main(args, subparser_dest_attr_name: str = "command"):
     globals.enable_angelic = args.enable_angelic
     globals.enable_perfect_angelic = args.enable_perfect_angelic
     globals.only_save_sbfl_result = args.save_sbfl_result
+
+    # agent edits
+    agent_globals.use_agent = args.use_agent
+    if args.use_agent:
+        # if args.verbose:
+        #     set_debug(True)
+        # global agent
+        # TODO: find a way to get the args to pass properly as args grow. subparser
+        args.ckpt_dir = args.ckpt_dir if args.ckpt_dir else args.output_dir
+        
+        # Create a custom logger
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+        agent_globals.agent = AcrAgent(
+            agent_model=args.model,
+            **vars(args),
+            # ckpt_dir=ckpt_dir,
+            # verbose=args.verbose,
+            # debug_mode=args.debug_mode,
+        )
+        agent_globals.agent.declarative_mem.print_doc_count()
+        agent_globals.kwargs = vars(args)
+        common.SELECTED_MODEL.llm = agent_globals.agent.planning_module.llm
 
     subcommand = getattr(args, subparser_dest_attr_name)
     if subcommand == "swe-bench":
@@ -243,6 +294,9 @@ def add_task_related_args(parser: ArgumentParser) -> None:
         help="Number of processes to run the tasks in parallel.",
     )
 
+    # agent edit
+    add_agent_related_args(parser)
+
 
 def make_swe_tasks(
     task_id: str | None,
@@ -396,9 +450,50 @@ def run_task_group(task_group_id: str, task_group_items: list[RawTask]) -> None:
     )
 
 
+def run_raw_task_agent(
+    task: RawTask, print_callback: Callable[[dict], None] | None = None
+) -> bool:
+    """
+    wrapper so that agent object persists
+    """
+    try:
+        # TODO: edit to make sure if we use parallel, things dont mess up
+        print('reset agent')
+        agent_globals.agent.reset()
+        # Note: old vers (else branch) loops here. current version (if branch) loops in inference.py
+        print(f'agent_globals.agent mode{agent_globals.agent.agent_mode}')
+        if agent_globals.agent.agent_mode == "kg":
+            kg_construct_main(agent_globals.agent, task.task_id)
+        if agent_globals.agent.agent_mode == "multi_attempt":
+            print('multiattempt')
+            # maybe refactor this into inference.py
+            try:
+                print('analyzed failed trajectory')
+                agent_globals.agent.analyze_failed_trajectory(task)
+            except Exception as e:
+                print(f'analyze failed trajectory failed: {e}')
+                print(traceback.format_exc())
+
+            run_ok = run_raw_task(task, print_callback)
+        else:
+            while True:
+                run_ok = run_raw_task(task, print_callback)
+
+                if agent_globals.agent.exit_workflow():
+                    print('exit plan loop\n')
+                    break
+                print('trying planning again\n')
+    
+    except Exception as e:
+        print(f'error in run_raw_task_agent: {e}')
+        print(traceback.format_exc())
+    return run_ok
+
+
 def run_task_in_subprocess(task: RawTask) -> None:
+    raw_task_fn = run_raw_task_agent if agent_globals.use_agent else run_raw_task
     with ProcessPoolExecutor(max_workers=1) as executor:
-        executor.submit(run_raw_task, task)
+        executor.submit(raw_task_fn, task)
 
 
 def run_raw_task(
@@ -435,6 +530,7 @@ def run_raw_task(
     except Exception as e:
         logger.exception(e)
         run_status_message = f"Task {task_id} failed with exception: {e}."
+        print(traceback.format_exc())
 
     log.log_and_always_print(run_status_message)
 
@@ -479,12 +575,20 @@ def do_inference(
         if globals.only_save_sbfl_result:
             _, _, run_ok = api_manager.fault_localization()
         else:
-            run_ok = inference.run_one_task(
-                api_manager.output_dir,
-                api_manager,
-                python_task.get_issue_statement(),
-                print_callback,
-            )
+            if agent_globals.agent.agent_mode == "multi_attempt":
+                run_ok = cog_arch.decisions.multiattempt_main_loop.run_one_task_multi_attempt(
+                    api_manager.output_dir,
+                    api_manager,
+                    python_task.get_issue_statement(),
+                    print_callback,
+                )
+            else:
+                run_ok = inference.run_one_task(
+                    api_manager.output_dir,
+                    api_manager,
+                    python_task.get_issue_statement(),
+                    print_callback,
+                )
 
             api_manager.dump_tool_call_sequence_to_file()
             api_manager.dump_tool_call_layers_to_file()

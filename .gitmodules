@@ -1,0 +1,3 @@
+[submodule "cognitive_base"]
+	path = cognitive_base
+	url = https://github.com/nicholaschenai/cognitive_base.git

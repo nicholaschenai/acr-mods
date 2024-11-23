@@ -61,6 +61,8 @@ def initialize_git_repo_and_commit(logger=None):
 
 
 def get_current_commit_hash() -> str:
+    # temporarily disable this so i wont get errors on my dev branch
+    return ''
     command = ["git", "rev-parse", "HEAD"]
     cp = subprocess.run(command, text=True, capture_output=True)
     try:

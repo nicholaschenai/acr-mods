@@ -13,6 +13,11 @@ from app.post_process import ExtractStatus, is_valid_json
 from app.search.search_manage import SearchManager
 from app.utils import parse_function_invocation
 
+# agent edits
+from cog_arch.prompts.new_proxy_prompt import NEW_PROXY_PROMPT
+from cog_arch.utils import agent_globals
+
+
 PROXY_PROMPT = """
 You are a helpful assistant that retreive API calls and bug locations from a text into json format.
 The text will consist of two parts:
@@ -75,7 +80,8 @@ def run(text: str) -> tuple[str, MessageThread]:
     """
 
     msg_thread = MessageThread()
-    msg_thread.add_system(PROXY_PROMPT)
+    # agent edits
+    msg_thread.add_system(NEW_PROXY_PROMPT if agent_globals.use_agent else PROXY_PROMPT)
     msg_thread.add_user(text)
     res_text, *_ = common.SELECTED_MODEL.call(
         msg_thread.to_msg(), response_format="json_object"
